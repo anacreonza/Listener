@@ -1,0 +1,4 @@
+node_modules/
+Messages/
+.env
+ticket.json
