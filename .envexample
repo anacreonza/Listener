@@ -1,0 +1,11 @@
+PORT = 8088
+APIUSERNAME = webhook_user
+APIPASSWORD = webhook_password
+SERVERURL = "https://wwstudioeserver.com"
+INSTANCE = "Studio"
+ESSERVER = "https://elasticsearch.server.example.com:9200"
+ESUSER = "esuser"
+ESPASS = "espass"
+INDEX = "article-archive"
+AUTHKEY = "1234abcd"
+EXPORTSDIR = "C:/Exports"

@@ -4,96 +4,138 @@ const express = require('express')
 const app = express();
 app.use(express.json());
 const fs = require('fs');
-const path = require('path');
+const Path = require('path');
 const datefns = require("date-fns");
 const { Readable } = require('stream');
 const { finished } = require('stream/promises');
 const port = process.env.PORT || 8088;
 const im = require("imagemagick");
 const wwHelpers = require('./wwHelpers');
+const imageProcessor = require('./imageProcessor');
 const { sign } = require("crypto");
 const { Client } = require('@elastic/elasticsearch');
 const { text } = require("body-parser");
 const client = new Client({
-    node: 'https://02cpt-fwslab01.m24.media24.com:9200',
+    node: process.env.ESSERVER,
     auth: {
-        username: 'text_index',
-        password: 'kutmyp-nygme8-komruV'
+        username: process.env.ESUSER,
+        password: process.env.ESPASS
     },
     tls: {
         rejectUnauthorized: false
     } });
 const index = process.env.INDEX;
-process.env.TZ = "Africa/Johannesburg";
-authKey = "E06A5343-05B5-4EF5-9F88-6F905D7B5E8E";
-messagesRoot = path.join(__dirname, "Messages");
-imagesInDir = path.join(__dirname, "Images In");
-imagesOutDir = path.join(__dirname, "Images Out");
-exportsRoot = "D:/pilot01/Listener/";
-articlesRoot = path.join(exportsRoot, "Articles");
-layoutsRoot = path.join(exportsRoot, "Layouts");
-archivesRoot = path.join(exportsRoot, "Archives");
+process.env.TZ = process.env.TIMEZONE;
+authKey = process.env.AUTHKEY;
+const messagesRoot = Path.join(__dirname, "Messages");
+exportsRoot = process.env.EXPORTSDIR;
+imagesInDir = Path.join(exportsRoot, "Images In");
+imagesOutDir = Path.join(exportsRoot, "Images Out");
+articlesRoot = Path.join(exportsRoot, "Articles");
+layoutsRoot = Path.join(exportsRoot, "Layouts");
+archivesRoot = Path.join(exportsRoot, "Archives");
+landbouLayoutsRoot = "\\\\02cpt-wkl01.m24.media24.com\\LBW\\LBWredaksioneel\\Uitgawes Packaged files\\";
+const logFilePath = Path.join(__dirname, "activityLog.log");
 
-async function downloadItem(itemUrl, outputFile){
+async function saveMessageFile(content){
+    let fileDate = datefns.format(new Date(), "yyyyMMdd");
+    let messagesDir = Path.join(messagesRoot, fileDate);
+    if (!fs.existsSync(messagesDir)){
+        fs.mkdirSync(messagesDir);
+    }
+    const guid = crypto.randomUUID();
+    const messageFile = Path.join(messagesDir, guid + ".json");
+    fs.writeFile(messageFile, JSON.stringify(content, null, 4), err => {
+        if (err) {
+            console.error(err);
+        }
+    });
+    return true;
+}
+
+async function downloadItem(itemUrl, outputFile, callback){
     // Prevent too many downloads from overloading server.
+    let dateStamp = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
+    let entry = `${dateStamp} Downloading item: ${itemUrl}\n`;
+    console.log(entry);
+    fs.appendFileSync(logFilePath, entry);
     const sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay));
     await sleep(10000);
     const stream = fs.createWriteStream(outputFile);
-    const { body } = await fetch(itemUrl);
-    await fetch(itemUrl);
+    const { body, status } = await fetch(itemUrl);
+    if (status !== 200){
+        console.log(`Response code: ${status}`);
+    }
+    // await fetch(itemUrl);
     await finished(Readable.fromWeb(body).pipe(stream));
     let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
-    console.log(`${now} Saved File: ${outputFile}`);
+    callback(outputFile);
 }
 
 async function downloadArticle(metaData){
     const basicMetaData = metaData.BasicMetaData;
     const contentMetaData = metaData.ContentMetaData;
-    console.log(`Processing Article: ${basicMetaData.Name}`);            
+    let entry = `Processing Article: ${basicMetaData.Name}`;
+    console.log(entry);
+    fs.appendFileSync(logFilePath, entry + "\n");
     // Get the full data for the object (the event message does not contain everything we need)
     const objectId = basicMetaData.ID;
     var objectIds = [];
     objectIds.push(objectId);
     let sessionTicket = await wwHelpers.logOn();
-    console.log(`Generated new ticket: ${sessionTicket}`);
     try {
         const objectInfo = await wwHelpers.getObjects(sessionTicket, objectIds);
         // Try to get the issue from the parent layout
         const parentId = objectInfo[0].Relations[0].ParentInfo.ID
+        if (parentId == undefined){
+            console.error("Unable to read object Parent ID");
+            return;
+        }
         const parentInfo = await wwHelpers.getObjects(sessionTicket, [parentId]);
+        if (parentInfo === undefined){
+            console.error("Unable to read object Parent Info");
+            return;
+        }
         const issueName = parentInfo[0].Relations[0].Targets[0].Issue.Name;
-        issueDir = path.join(articleDir, issueName);
+        if (issueName === undefined){
+            console.error("Unable to read object Issue Name.");
+            return;
+        }
+        issueDir = Path.join(articleDir, issueName);
         if (!fs.existsSync(issueDir)){
             fs.mkdirSync(issueDir);
         }
         // Save JSON data as message
-        const articleFile = path.join(issueDir, basicMetaData.Name + ".json");
+        const articleFile = Path.join(issueDir, basicMetaData.Name + ".json");
         let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
         console.log(`${now} Saving article info to: ${articleFile}`);
         fs.writeFile(articleFile, JSON.stringify(objectInfo, null, 4), err => {
             if (err) {
-                console.error(err);
+                console.error(`Saving of JSON file failed: ${err}`);
             }
         });
         // Save article content as text
-        const textFile = path.join(issueDir, basicMetaData.Name + ".txt");
+        const textFile = Path.join(issueDir, basicMetaData.Name + ".txt");
         now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
         console.log(`${now} Saving original text file to: ${textFile}`);
         fs.writeFile(textFile, contentMetaData.PlainContent, err => {
             if (err) {
-                console.log(err);
+                console.error(`Saving of text file failed: ${err}`);
             }
         })
         // Download original
         const itemUrl = `${objectInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
         const mimeType = objectInfo[0].Files[0].Type;
         const ext = wwHelpers.getExtensionFromMimeType(mimeType);
-        const outputFile = path.join(issueDir, basicMetaData.Name + "." + ext);
+        const outputFile = Path.join(issueDir, basicMetaData.Name + "." + ext);
         // Now download the file
-        await downloadItem(itemUrl, outputFile);
+        downloadItem(itemUrl, outputFile, (outputFile)=>{
+            now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
+            console.log(`${now} Saved Article File: ${outputFile}`);
+        });
         return true;
     } catch (error) {
-        console.log(error.message);                  
+        console.log(`Download of article failed: ${error.message}`);                  
     }
     wwHelpers.logOff(sessionTicket);
 }
@@ -105,7 +147,9 @@ async function indexArticle(client, index, content, articleFile){
     });
     if (indexRequest.result == "created"){
         let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
-        console.log(`${now} Indexed: ${articleFile}`);
+        let entry = `${now} Indexed: ${articleFile}`;
+        fs.appendFileSync(logFilePath, entry + "\n");
+        console.log(entry);
         return true;
     } else {
         console.log(msg.result);
@@ -113,29 +157,8 @@ async function indexArticle(client, index, content, articleFile){
     }
 }
 
-async function convertImage(file, imagesOutDir) {
-    console.log(`Converting file: ${file}`);
-    const extName = path.extname(file);
-    const fileName = path.basename(file, extName);
-    const outputFile = path.join(imagesOutDir, fileName + ".png");
-    console.log(`Output file: ${outputFile}`);
-    var newxSize = 800;
-    // im.readMetadata(file, (err, metaData) => {
-    //     console.log(metaData);
-    //     const xSize = metaData.exif.pixelXDimension.replace(",", '');
-    //     const ySize = metaData.exif.pixelYDimension.replace(",", '');
-    //     var newxSize = xSize * 0.4;
-    //     newxSize = Math.round(newxSize);
-    //     if (newxSize < 400){
-    //         newxSize = 400
-    //     };
-        // im.convert([file, "-flatten", "-resize", newxSize, outputFile], (err, stdout)=>{
-        //     if (err) throw err;
-        //     console.log("stdout: ", stdout);
-        // });
-    // });
-}
-async function archiveArticle(objectInfo, articlesRoot){
+async function archiveArticle(content, articlesRoot){
+    let objectInfo = content.data.Object;
     const metaData = objectInfo.MetaData;    
     const basicMetaData = metaData.BasicMetaData;
     const workflowMetaData = metaData.WorkflowMetaData;
@@ -144,7 +167,7 @@ async function archiveArticle(objectInfo, articlesRoot){
         fs.mkdirSync(articlesRoot);
     };
     let publication = basicMetaData.Publication.Name;
-    articleDir = path.join(articlesRoot, publication);
+    articleDir = Path.join(articlesRoot, publication);
     if (!fs.existsSync(articleDir)){
         fs.mkdirSync(articleDir);
     };
@@ -165,87 +188,7 @@ async function archiveArticle(objectInfo, articlesRoot){
         return true;
     } 
 }
-async function archiveDossier(dossierInfo, archivesRoot){
-    const metaData = dossierInfo.MetaData;
-    const basicMetaData = metaData.BasicMetaData;
-    const targetsData = dossierInfo.Targets;
-    console.log(`Archiving Dossier: ${basicMetaData.Name}`);
-    let sessionTicket = await wwHelpers.logOn();
-    const extendedDossierInfo = await wwHelpers.getObjects(sessionTicket, [basicMetaData.ID]);
-    // Create root folder
-    if (!fs.existsSync(archivesRoot)){
-        fs.mkdirSync(archivesRoot);
-    }
-    // Save the dossier metadata file
-    const dossierMetaFile = path.join(archivesRoot, basicMetaData.Name + ".json");
-    fs.writeFile(dossierMetaFile, JSON.stringify(extendedDossierInfo, null, 4), err => {
-        if (err) {
-            console.error(err);
-        }
-    });
-    // Create publication folder
-    const publicationDir = path.join(archivesRoot, basicMetaData.Publication.Name);
-    if (!fs.existsSync(publicationDir)){
-        console.log(`Making new publication directory: ${publicationDir}`);
-        fs.mkdirSync(publicationDir);
-    }
-    // Create issue folder
-    if ( targetsData[0].Issue.Name == null ){
-        console.log("Invalid issue name.");
-        return;
-    } 
-    const dossierIssueName = targetsData[0].Issue.Name;
-    const issueDir = path.join(publicationDir, dossierIssueName);
-    if (!fs.existsSync(issueDir)){
-        console.log(`Making new issue directory: ${dossierIssueName}`);
-        fs.mkdirSync(issueDir);
-    }
-    // Create the dossier folder
-    const dossierDir = path.join(issueDir, basicMetaData.Name);
-    if (!fs.existsSync(dossierDir)){
-        fs.mkdirSync(dossierDir);
-    }
-    // Save the metadata file
-    // const dossierMetaFile = path.join(dossierDir, basicMetaData.Name + ".json");
-    // fs.writeFile(dossierMetaFile, JSON.stringify(dossierInfo, null, 4), err => {
-    //     if (err) {
-    //         console.error(err);
-    //     }
-    // });
-    let dossierItemIds = await wwHelpers.getDossierChildIds(extendedDossierInfo[0].Relations, basicMetaData.ID);
-    dossierItemIds.forEach(async function(itemId){
-        let itemInfo = await wwHelpers.getObjects(sessionTicket, [itemId]);
-        let itemType = itemInfo[0].Files[0].Type;
-        let itemExt = wwHelpers.getExtensionFromMimeType(itemType);
-        let itemName = itemInfo[0].MetaData.BasicMetaData.Name + "." + itemExt;
-        console.log(`Downloading contained item: ${itemName}`);
-        let itemFile = path.join(dossierDir, itemName);
-        let itemUrl = `${itemInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
-        await downloadItem(itemUrl, itemFile);
-        // If the item is an InDesign layout, get all its links and then test if those links are already in the dossier
-        // Download them and save them in the dossier if not.
-        if (itemType == "application/indesign"){
-            let links = await wwHelpers.getLinkIds(itemInfo[0].Relations, itemId);
-            links.forEach(async function(linkId){
-                if (!dossierItemIds.includes(linkId)){
-                    let linkInfo = await wwHelpers.getObjects(sessionTicket, [linkId]);
-                    console.log(`Downloading external link: ${linkInfo[0].MetaData.BasicMetaData.Name}`);
-                    let linkType = linkInfo[0].Files[0].Type;
-                    let linkExt = wwHelpers.getExtensionFromMimeType(linkType);
-                    let linkFile = path.join(dossierDir, linkInfo[0].MetaData.BasicMetaData.Name + "." + linkExt);
-                    let linkUrl = `${linkInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
-                    await downloadItem(linkUrl, linkFile);
-                }
-            })
-        }
-    });
-    // Update the dossier's status
-    let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
-    // let now = new Date().toISOString();
-    const comment = `Archived: ${now}`;
-    await wwHelpers.changeObjectStatus(sessionTicket, basicMetaData.ID, "Dossier Archived", comment);
-    // await wwHelpers.logOff(sessionTicket);
-}
+
 async function packageLayout(layoutInfo, layoutsRoot){
     const metaData = layoutInfo.MetaData;
     const basicMetaData = metaData.BasicMetaData;
@@ -255,69 +198,113 @@ async function packageLayout(layoutInfo, layoutsRoot){
         fs.mkdirSync(layoutsRoot);
     };
     let layoutPub = basicMetaData.Publication.Name;
-    layoutsDir = path.join(layoutsRoot, layoutPub);
+    if (layoutPub == "LANDBOU"){
+        layoutsDir = landbouLayoutsRoot;
+    } else {
+        layoutsDir = Path.join(layoutsRoot, layoutPub);
+    }
     if (!fs.existsSync(layoutsDir)){
         fs.mkdirSync(layoutsDir);
     };
     console.log(`Processing Layout: ${basicMetaData.Name}`);
     const objectId = basicMetaData.ID;
     let sessionTicket = await wwHelpers.logOn();
-    var objectIds = [];
+    let objectIds = [];
     objectIds.push(objectId);
-    const objectInfo = await wwHelpers.getObjects(sessionTicket, objectIds);
+    try {
+        const objectInfo = await wwHelpers.getObjects(sessionTicket, objectIds);
+        // Issue Name not found must not kill the script
+        // console.log(targetsData[0].Issue.Name);
+        const issueName = targetsData[0].Issue.Name;
+        // const issueName = objectInfo[0].Relations[1].Targets[0].Issue.Name;
 
-    // Issue Name not found must not kill the script
-    // console.log(targetsData[0].Issue.Name);
-    const issueName = targetsData[0].Issue.Name;
-    // const issueName = objectInfo[0].Relations[1].Targets[0].Issue.Name;
-
-    // Make directory for the issue
-    issueDir = path.join(layoutsDir, issueName);
-    if (!fs.existsSync(issueDir)){
-        fs.mkdirSync(issueDir);
-    }
-    // Make directory for the layout
-    const layoutDir = path.join(issueDir, basicMetaData.Name);
-    if (!fs.existsSync(layoutDir)){
-        fs.mkdirSync(layoutDir);
-    }                
-    // Save the metadata file
-    const layoutMetaFile = path.join(layoutDir, basicMetaData.Name + ".json");
-    fs.writeFile(layoutMetaFile, JSON.stringify(objectInfo, null, 4), err => {
-        if (err) {
-            console.error(err);
+        // Landbou like to have "packaged at the end of issue name folders"
+        // if (layoutPub == "LANDBOU"){
+        //     issueName = issueName + " packaged";
+        // }
+        // Make directory for the issue
+        issueDir = Path.join(layoutsDir, issueName);
+        if (!fs.existsSync(issueDir)){
+            fs.mkdirSync(issueDir);
         }
-    });
-    const links = await wwHelpers.getLinkIds(objectInfo[0].Relations, objectId);
-    const itemUrl = `${objectInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
-    const mimeType = objectInfo[0].Files[0].Type;
-    const ext = wwHelpers.getExtensionFromMimeType(mimeType);
-    const outputFile = path.join(layoutDir, basicMetaData.Name + "." + ext);
-    // Now download the file itself
-    await downloadItem(itemUrl, outputFile);
+        // Make directory for the layout
+        const layoutDir = Path.join(issueDir, basicMetaData.Name);
+        if (!fs.existsSync(layoutDir)){
+            fs.mkdirSync(layoutDir);
+        }                
+        // Save the metadata file
+        const layoutMetaFile = Path.join(layoutDir, basicMetaData.Name + ".json"); 
+        fs.writeFile(layoutMetaFile, JSON.stringify(objectInfo, null, 4), err => {
+            if (err) {
+                console.error(err);
+            }
+        });
+        const links = await wwHelpers.getLinkIds(objectInfo[0].Relations, objectId);
+        const itemUrl = `${objectInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
+        const mimeType = objectInfo[0].Files[0].Type;
+        const ext = wwHelpers.getExtensionFromMimeType(mimeType);
+        const outputFile = Path.join(layoutDir, basicMetaData.Name + "." + ext);
+        // Now download the file itself
+        downloadItem(itemUrl, outputFile, (outputFile)=>{
+            let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
+            console.log(`${now} Saved layout: ${outputFile}`);
+        });
 
-    if (links.length > 0){
-        // Prepare a links folder if necessary
-        let linksDir = path.join(layoutDir, "Links");
-        if (!fs.existsSync(linksDir)){
-            fs.mkdirSync(linksDir);
+        if (links.length > 0){
+            // Prepare links folders if necessary
+            let linksDir = Path.join(layoutDir, "Links");
+            if (!fs.existsSync(linksDir)){
+                fs.mkdirSync(linksDir);
+            }
+            let webLinksDir = Path.join(layoutDir, "WebLinks");
+            if (!fs.existsSync(webLinksDir)){
+                fs.mkdirSync(webLinksDir);
+            }
+            // Now download all the links
+            links.forEach(async function(linkId){
+                let linkInfo = await wwHelpers.getObjects(sessionTicket, [linkId]);
+                // console.log(`Downloading link: ${linkInfo[0].MetaData.BasicMetaData.Name}`);
+                let linkType = linkInfo[0].Files[0].Type;
+                let linkExt = wwHelpers.getExtensionFromMimeType(linkType);
+                let linkFile = Path.join(linksDir, linkInfo[0].MetaData.BasicMetaData.Name + "." + linkExt);
+                let linkUrl = `${linkInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
+                downloadItem(linkUrl, linkFile, (linkFile)=>{
+                    let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
+                    console.log(`${now} Saved linked item: ${linkFile}`);
+                    let fileExt = Path.parse(linkFile).ext.replace(".", "").toUpperCase();
+                    if (
+                        fileExt.includes("JPG") ||
+                        fileExt.includes("PSD") ||
+                        fileExt.includes("TIF") ||
+                        fileExt.includes("PNG") ||
+                        fileExt.includes("PDF")
+                        // fileExt.includes("EPS")
+                    ) {
+                        let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
+                        let entry = `${now} Generating Web Image for item: ${linkInfo[0].MetaData.BasicMetaData.Name}.${fileExt}\n`;
+                        console.log(entry);
+                        fs.appendFileSync(logFilePath, entry);
+                        let image = {
+                            "sourceFile": linkFile,
+                            "outputDir": webLinksDir 
+                        }
+                        imageProcessor.add(image);
+                    };
+                });
+            });
+;
         }
-        // Now download all the links
-        links.forEach(async function(linkId){
-            let linkInfo = await wwHelpers.getObjects(sessionTicket, [linkId]);
-            console.log(`Downloading link: ${linkInfo[0].MetaData.BasicMetaData.Name}`);
-            let linkType = linkInfo[0].Files[0].Type;
-            let linkExt = wwHelpers.getExtensionFromMimeType(linkType);
-            let linkFile = path.join(linksDir, linkInfo[0].MetaData.BasicMetaData.Name + "." + linkExt);
-            let linkUrl = `${linkInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
-            await downloadItem(linkUrl, linkFile);
-        })
+        // Update the layout's status
+        const comment = `Packaged by script.`;
+        await wwHelpers.changeObjectStatus(sessionTicket, objectId, "Layout Packaged", comment);
+        // wwHelpers.logOff(sessionTicket);
+        return true;
+    } catch (error) {
+        console.error(`Unable to get info for object: ${objectIds}`);
+        return;
     }
-    // Update the layout's status
-    const comment = `Packaged by script.`;
-    await wwHelpers.changeObjectStatus(sessionTicket, objectId, "Layout Packaged", comment);
-    // wwHelpers.logOff(sessionTicket);
-    return true;
+
+
 }
 if (!fs.existsSync(messagesRoot)){
     fs.mkdirSync(messagesRoot);
@@ -345,47 +332,43 @@ app.post('/', async (req, res) => {
             break;
     }
     if (typeof content.data.Object == undefined){
-        console.log("Event has invalid data");
+        let entry = "Event has invalid data";
+        fs.appendFileSync(logFilePath, entry);
+        console.log(entry);
         res.sendStatus(200);
     }
     let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
     const targetsData = content.data.Object.Targets;
     const basicMetaData = content.data.Object.MetaData.BasicMetaData;
-    // let now = new Date().toISOString();
-    console.log(`${now} Event: ${basicMetaData.Name} (ID: ${basicMetaData.ID}) ${action} `);
-    let fileDate = datefns.format(new Date(), "yyyyMMdd");
-    let messagesDir = path.join(messagesRoot, fileDate);
-    if (!fs.existsSync(messagesDir)){
-        fs.mkdirSync(messagesDir);
-    }
-    const messageFile = path.join(messagesDir, basicMetaData.Name + ".json");
-    fs.writeFile(messageFile, JSON.stringify(content, null, 4), err => {
-        if (err) {
-            console.error(err);
-        }
-    });
+    const userName = content.data.Object.MetaData.WorkflowMetaData.Modifier;
+    let eventMsg = `${now} Woodwing Event - File: ${basicMetaData.Name}, Modified By: ${userName}, ID: ${basicMetaData.ID}, Event Type: ${action} `;
+    console.log(eventMsg);
+    fs.appendFileSync(logFilePath, eventMsg + "\n");
 
     switch (content.data.Object.MetaData.BasicMetaData.Type) {
         case "Article":
             const articleToIndexStatus = "IC - To Index";
             if (content.data.Object.MetaData.WorkflowMetaData.State.Name == articleToIndexStatus){
-                let articleObject = content.data.Object;
-                await archiveArticle(articleObject, articlesRoot);
+                saveMessageFile(content);
+                await archiveArticle(content, articlesRoot);
             }
             break;
         case "Layout":
             const layoutToPackageStatus = "Layout To Package";
             if (content.data.Object.MetaData.WorkflowMetaData.State.Name == layoutToPackageStatus){
+                saveMessageFile(content);
                 let layoutObject = content.data.Object;
                 await packageLayout(layoutObject, layoutsRoot);
             }
             break;
         case "Image":
+            const imageToProcessStatus = "Image To Web";
             const objectId = basicMetaData.ID;
             var objectIds = [];
             objectIds.push(objectId);
             // console.log(objectIds);
-            if (content.data.Object.MetaData.WorkflowMetaData.State.Name == "Image To Web"){
+            if (content.data.Object.MetaData.WorkflowMetaData.State.Name == imageToProcessStatus){
+                saveMessageFile(content);
                 console.log("Processing Image:");
                 // Log in to Studio Server - application state must be maintained by this app.
                 // Must log in to get files metadata as that is not included in normal event message
@@ -394,14 +377,17 @@ app.post('/', async (req, res) => {
                 const itemUrl = `${objectInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
                 const mimeType = objectInfo[0].Files[0].Type;
                 const ext = wwHelpers.getExtensionFromMimeType(mimeType);
-                const outputFile = path.join(imagesInDir, basicMetaData.Name + "." + ext);
+                const outputFile = Path.join(imagesInDir, basicMetaData.Name + "." + ext);
                 // Now download the file
-                await downloadItem(itemUrl, outputFile);
+                downloadItem(itemUrl, outputFile, (outputFile)=>{
+                    let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
+                    console.log(`${now} Downloaded: ${outputFile}`);
+                });
                 // Now update the item's metadata in Studio
                 const newStatus = "Image Exported";
                 const comment = "Image exported for web use.";
                 const changedObject = await wwHelpers.changeObjectStatus(sessionTicket, objectId, newStatus, comment );
-                var metadataFileName = path.join(imagesOutDir, basicMetaData.Name + ".json");
+                var metadataFileName = Path.join(imagesOutDir, basicMetaData.Name + ".json");
                 fs.writeFile(metadataFileName, JSON.stringify(changedObject, null, 4), err => {
                     if (err) {
                         console.error(err);
@@ -415,8 +401,11 @@ app.post('/', async (req, res) => {
             const dossierToArchiveStatus = "None"; // Disabling Dossier archiving due to server overload
             // const dossierToArchiveStatus = "Dossier To Archive";
             if (content.data.Object.MetaData.WorkflowMetaData.State.Name == dossierToArchiveStatus){
+                saveMessageFile(content);
                 let dossierObject = content.data.Object;
-                await archiveDossier(dossierObject, archivesRoot);
+                archiver.archiveDossier(dossierObject, archivesRoot).then((result) => {
+                    wwHelpers.changeObjectStatus(sessionTicket, basicMetaData.ID, "Dossier Archived", result);
+                });
             }
             break
         default:

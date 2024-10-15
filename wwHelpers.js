@@ -884,6 +884,7 @@ module.exports = {
         });
         const data = await response.json();
         if (data.result){
+            // console.log(data.result);
             return data.result.Objects;
         } else {
             console.error(data);
