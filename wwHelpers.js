@@ -5,8 +5,8 @@ module.exports = {
     requestUrl: process.env.SERVERURL + "/" + process.env.INSTANCE + "/index.php?protocol=JSON",
     transferRequestUrl: process.env.SERVERURL + "/" + process.env.INSTANCE + "/transferindex.php?protocol=JSON",
     credentials: {
-        "userName": process.env.APIUSERNAME,
-        "password": process.env.APIPASSWORD
+        "userName": process.env.WWUSERNAME,
+        "password": process.env.WWPASSWORD
     },
     ticketFile: path.join(__dirname, "sessionTicket.txt"),
     logOn: async function () {
@@ -69,6 +69,37 @@ module.exports = {
             method: 'POST',
             body: JSON.stringify(logOffBody),
             headers: { 'Content-Type': 'application/json'}
+        });
+    },
+    sendIDSRequest: (url, args, callback)=> {
+        const wsdlUrl = url + "/service?wsdl";
+        soap.createClient(wsdlUrl, function (err, client) {
+            client.setEndpoint(url);
+            client.Service.Service.RunScript(args, function (err, result) {
+                if (err) console.log(`Error: ${err}`);
+                callback(result);
+            });
+        });
+    },
+    runXMLExport: (iDserverUrl, instanceName, username, password, docID)=>{
+        const args = {
+            runScriptParameters: {
+                scriptLanguage: "javascript",
+                scriptFile: "C:/InDesignScripts/XML-Server-Export.jsx",
+                scriptArgs: [
+                    { name: "server", value: instanceName },
+                    { name: "username", value: username },
+                    { name: "password", value: password },
+                    { name: "docID", value: docID },
+                ],
+            },
+        };
+        this.sendIDSRequest(iDserverUrl, args, function (result) {
+            if (result.errorNumber === 0) {
+                console.log("Script completed successfully");
+            } else {
+                console.log(result);
+            }
         });
     },
     getExtensionFromMimeType: (mimeType)=>{

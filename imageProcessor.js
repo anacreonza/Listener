@@ -10,6 +10,13 @@ const logFilePath = Path.join(__dirname, "activityLog.log");
 const xMaxSize = 700;
 const yMaxSize = 700;
 
+function log(message){
+    let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
+    let logMsg = `${now} ${message}`;
+    console.log(logMsg);
+    fs.appendFileSync(logFilePath, `${logMsg}\n` );
+}
+
 im.convert.path = "C:\\Program Files\\ImageMagick-7.1.1-Q16-HDRI\\magick.exe";
 // Queue processor
 class Queue {
@@ -30,14 +37,11 @@ class Queue {
             this.activeCount++;
             try {
                 makeLowResImage(image).then((outputFileName) => {
-                    let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
-                    let entry = `${now} Output Image Created: ${outputFileName}\n`;
-                    fs.appendFileSync(logFilePath, entry);
-                    console.log(entry);
-                }
-                );
+                    log(`Output Image Created: ${outputFileName}`);
+                },
+                ).catch(console.error("Error processing image."));
             } catch (error) {
-                console.error("Error processing task:", error);
+                log("Error processing task:", error);
             } finally {
                 this.activeCount--;
                 this.processQueue(); // Process the next task
@@ -57,13 +61,18 @@ function makeLowResImage(image) {
             .toLowerCase();
         let outputFile = Path.join(
             image.outputDir,
-            Path.parse(image.sourceFile).name + "-web.png"
+            Path.parse(image.sourceFile).name + ".png"
+        );
+        // Multi-layer PSDs extract to multiple files - with -0 etc appended to the filename. Promise will be rejected if output file name differs
+        let outputLayerFile = Path.join(
+            image.outputDir,
+            Path.parse(image.sourceFile).name + "-0.png"
         );
         im.readMetadata(image.sourceFile, (err, metadata) => {
             if (err) throw err;
             let conversionSettings = [];
             let newSize = `${xMaxSize}x${yMaxSize}`;
-            console.log(metadata);
+            // console.log(metadata);
             switch (fileExt) {
                 // case "eps":
                 //     let fixedName =
@@ -122,9 +131,10 @@ function makeLowResImage(image) {
                     im.convert(conversionSettings, (err, stdout) => {
                         if (err) throw err;
                         if (stdout) {
-                            console.log(stdout);
+                           log(stdout);
                         }
-                        if (fs.existsSync(outputFile)) {
+                        if (fs.existsSync(outputFile) || fs.existsSync(outputLayerFile)) {
+                            log(`Successfully created low res of image: ${image.sourceFile}`);
                             resolve(outputFile);
                         } else {
                             reject(`Low res file not created: ${outputFile}`);

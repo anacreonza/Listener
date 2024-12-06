@@ -15,6 +15,9 @@ const imageProcessor = require('./imageProcessor');
 const { sign } = require("crypto");
 const { Client } = require('@elastic/elasticsearch');
 const { text } = require("body-parser");
+const iDserverUrl = process.env.IDSERVERURL;
+const idsHelpers = require("./idsHelpers");
+const soap = require("soap");
 const client = new Client({
     node: process.env.ESSERVER,
     auth: {
@@ -35,6 +38,7 @@ articlesRoot = Path.join(exportsRoot, "Articles");
 layoutsRoot = Path.join(exportsRoot, "Layouts");
 archivesRoot = Path.join(exportsRoot, "Archives");
 landbouLayoutsRoot = "\\\\02cpt-wkl01.m24.media24.com\\LBW\\LBWredaksioneel\\Uitgawes Packaged files\\";
+xmlExportsRoot = "\\\\02cpt-wkl01.m24.media24.com\\PDF Store\\XML\\";
 const logFilePath = Path.join(__dirname, "activityLog.log");
 
 async function saveMessageFile(content){
@@ -68,7 +72,6 @@ async function downloadItem(itemUrl, outputFile, callback){
     }
     // await fetch(itemUrl);
     await finished(Readable.fromWeb(body).pipe(stream));
-    let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
     callback(outputFile);
 }
 
@@ -107,8 +110,7 @@ async function downloadArticle(metaData){
         }
         // Save JSON data as message
         const articleFile = Path.join(issueDir, basicMetaData.Name + ".json");
-        let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
-        console.log(`${now} Saving article info to: ${articleFile}`);
+        log(`Saving article info to: ${articleFile}`);
         fs.writeFile(articleFile, JSON.stringify(objectInfo, null, 4), err => {
             if (err) {
                 console.error(`Saving of JSON file failed: ${err}`);
@@ -116,8 +118,7 @@ async function downloadArticle(metaData){
         });
         // Save article content as text
         const textFile = Path.join(issueDir, basicMetaData.Name + ".txt");
-        now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
-        console.log(`${now} Saving original text file to: ${textFile}`);
+        log(`Saving original text file to: ${textFile}`);
         fs.writeFile(textFile, contentMetaData.PlainContent, err => {
             if (err) {
                 console.error(`Saving of text file failed: ${err}`);
@@ -130,8 +131,7 @@ async function downloadArticle(metaData){
         const outputFile = Path.join(issueDir, basicMetaData.Name + "." + ext);
         // Now download the file
         downloadItem(itemUrl, outputFile, (outputFile)=>{
-            now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
-            console.log(`${now} Saved Article File: ${outputFile}`);
+            log(`Saved Article File: ${outputFile}`);
         });
         return true;
     } catch (error) {
@@ -146,13 +146,10 @@ async function indexArticle(client, index, content, articleFile){
         body: content
     });
     if (indexRequest.result == "created"){
-        let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
-        let entry = `${now} Indexed: ${articleFile}`;
-        fs.appendFileSync(logFilePath, entry + "\n");
-        console.log(entry);
+        log(`Indexed: ${articleFile}`);
         return true;
     } else {
-        console.log(msg.result);
+        log(msg.result);
         return false;
     }
 }
@@ -179,16 +176,87 @@ async function archiveArticle(content, articlesRoot){
     }
     if (indexed == true){
         // Change status of article
-        let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
-        const comment = `Article Indexed: ${now}`;
+        log(`Article ${basicMetaData.Name} indexed`);
         let sessionTicket = await wwHelpers.logOn();
-        await wwHelpers.changeObjectStatus(sessionTicket, basicMetaData.ID, "IC - Indexed", comment);
+        let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
+        await wwHelpers.changeObjectStatus(sessionTicket, basicMetaData.ID, "IC - Indexed", `${now} Article Indexed`);
         // Session must be kept alive - or events that trigger another download while one is already running will crash.
         // await wwHelpers.logOff(sessionTicket);
         return true;
     } 
 }
-
+function log(message){
+    let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
+    let logMsg = `${now} ${message}`;
+    console.log(logMsg);
+    fs.appendFileSync(logFilePath, `${logMsg}\n`);
+}
+async function exportXML(layoutInfo, xmlExportsRoot){
+    const metaData = layoutInfo.MetaData;
+    const basicMetaData = metaData.BasicMetaData;
+    const targetsData = layoutInfo.Targets;
+    idsHelpers.runXMLExport(iDserverUrl, process.env.INSTANCE, process.env.WWUSERNAME, process.env.WWPASSWORD, basicMetaData.ID, async (result)=>{
+        if (result.errorNumber === 0){
+            let sessionTicket = await wwHelpers.logOn();
+            const objectInfo = await wwHelpers.getObjects(sessionTicket, [basicMetaData.ID]);
+            if (!fs.existsSync(xmlExportsRoot)){
+                fs.mkdirSync(xmlExportsRoot);
+            }
+            let xmlPublication = basicMetaData.Publication.Name;
+            const xmlExportDir = Path.join(xmlExportsRoot, xmlPublication);
+            if (!fs.existsSync(xmlExportDir)){
+                fs.mkdirSync(xmlExportDir);
+            }
+            let xmlIssueDir = Path.join(xmlExportDir, targetsData[0].Issue.Name);
+            if (!fs.existsSync(xmlIssueDir)){
+                fs.mkdirSync(xmlIssueDir);
+            }
+            let xmlArticleDir = Path.join(xmlIssueDir, basicMetaData.Name);
+            if (!fs.existsSync(xmlArticleDir)){
+                fs.mkdirSync(xmlArticleDir);
+            }
+            const linkIDs = await wwHelpers.getLinkIds(objectInfo[0].Relations, basicMetaData.ID);
+            if (linkIDs.length > 0){
+                let webImagesDir = Path.join(xmlArticleDir, "images");
+                if (!fs.existsSync(webImagesDir)){
+                    fs.mkdirSync(webImagesDir);
+                }
+                // Now download all the links
+                linkIDs.forEach(async function(linkId){
+                    let linkInfo = await wwHelpers.getObjects(sessionTicket, [linkId]);
+                    // console.log(`Downloading link: ${linkInfo[0].MetaData.BasicMetaData.Name}`);
+                    let linkType = linkInfo[0].Files[0].Type;
+                    let linkExt = wwHelpers.getExtensionFromMimeType(linkType);
+                    let linkFile = Path.join(webImagesDir, linkInfo[0].MetaData.BasicMetaData.Name + "." + linkExt);
+                    let linkUrl = `${linkInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
+                    downloadItem(linkUrl, linkFile, (linkFile)=>{
+                        log(`Saved linked item: ${linkFile}`);
+                        let fileExt = Path.parse(linkFile).ext.replace(".", "").toUpperCase();
+                        if (
+                            fileExt.includes("JPG") ||
+                            fileExt.includes("PSD") ||
+                            fileExt.includes("TIF") ||
+                            fileExt.includes("PNG") ||
+                            fileExt.includes("PDF")
+                            // fileExt.includes("EPS")
+                        ) {
+                            log(`Generating Web Image for item: ${linkInfo[0].MetaData.BasicMetaData.Name}.${fileExt}`);
+                            let image = {
+                                "sourceFile": linkFile,
+                                "outputDir": webImagesDir 
+                            }
+                            // Make low res versions of links
+                            imageProcessor.add(image);
+                        };
+                    });
+                });
+            }
+            log(`File: ${basicMetaData.Name} successfully exported to XML.`);
+        } else {
+            log(`XML export of file: ${basicMetaData.Name} failed. Error number: ${result.errorNumber}, ScriptResult: ${result.scriptResult}`);
+        }
+    });
+}
 async function packageLayout(layoutInfo, layoutsRoot){
     const metaData = layoutInfo.MetaData;
     const basicMetaData = metaData.BasicMetaData;
@@ -206,7 +274,7 @@ async function packageLayout(layoutInfo, layoutsRoot){
     if (!fs.existsSync(layoutsDir)){
         fs.mkdirSync(layoutsDir);
     };
-    console.log(`Processing Layout: ${basicMetaData.Name}`);
+    log(`Processing Layout: ${basicMetaData.Name}`);
     const objectId = basicMetaData.ID;
     let sessionTicket = await wwHelpers.logOn();
     let objectIds = [];
@@ -246,8 +314,7 @@ async function packageLayout(layoutInfo, layoutsRoot){
         const outputFile = Path.join(layoutDir, basicMetaData.Name + "." + ext);
         // Now download the file itself
         downloadItem(itemUrl, outputFile, (outputFile)=>{
-            let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
-            console.log(`${now} Saved layout: ${outputFile}`);
+            log(`Saved layout: ${outputFile}`);
         });
 
         if (links.length > 0){
@@ -269,27 +336,27 @@ async function packageLayout(layoutInfo, layoutsRoot){
                 let linkFile = Path.join(linksDir, linkInfo[0].MetaData.BasicMetaData.Name + "." + linkExt);
                 let linkUrl = `${linkInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
                 downloadItem(linkUrl, linkFile, (linkFile)=>{
-                    let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
-                    console.log(`${now} Saved linked item: ${linkFile}`);
+                    log(`Saved linked item: ${linkFile}`);
                     let fileExt = Path.parse(linkFile).ext.replace(".", "").toUpperCase();
-                    if (
-                        fileExt.includes("JPG") ||
-                        fileExt.includes("PSD") ||
-                        fileExt.includes("TIF") ||
-                        fileExt.includes("PNG") ||
-                        fileExt.includes("PDF")
-                        // fileExt.includes("EPS")
-                    ) {
-                        let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
-                        let entry = `${now} Generating Web Image for item: ${linkInfo[0].MetaData.BasicMetaData.Name}.${fileExt}\n`;
-                        console.log(entry);
-                        fs.appendFileSync(logFilePath, entry);
-                        let image = {
-                            "sourceFile": linkFile,
-                            "outputDir": webLinksDir 
-                        }
-                        imageProcessor.add(image);
-                    };
+
+                    // Only make low res files for landbou
+                    if (layoutPub == "LANDBOU"){
+                        if (
+                            fileExt.includes("JPG") ||
+                            fileExt.includes("PSD") ||
+                            fileExt.includes("TIF") ||
+                            fileExt.includes("PNG") ||
+                            fileExt.includes("PDF")
+                            // fileExt.includes("EPS")
+                        ) {
+                            log(`Generating Web Image for item: ${linkInfo[0].MetaData.BasicMetaData.Name}.${fileExt}\n`);
+                            let image = {
+                                "sourceFile": linkFile,
+                                "outputDir": webLinksDir 
+                            }
+                            imageProcessor.add(image);
+                        };
+                    }
                 });
             });
 ;
@@ -317,7 +384,7 @@ app.post('/', async (req, res) => {
     const headers = req.headers;
     const signature = headers["x-hook-signature"];
     if (typeof signature == undefined){
-        console.log("Event has invalid signature header.");
+        log("Event has invalid signature header.");
         res.sendStatus(200);
     }
     var action = "";
@@ -332,19 +399,13 @@ app.post('/', async (req, res) => {
             break;
     }
     if (typeof content.data.Object == undefined){
-        let entry = "Event has invalid data";
-        fs.appendFileSync(logFilePath, entry);
-        console.log(entry);
+        log("Event has invalid data");
         res.sendStatus(200);
     }
-    let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
     const targetsData = content.data.Object.Targets;
     const basicMetaData = content.data.Object.MetaData.BasicMetaData;
     const userName = content.data.Object.MetaData.WorkflowMetaData.Modifier;
-    let eventMsg = `${now} Woodwing Event - File: ${basicMetaData.Name}, Modified By: ${userName}, ID: ${basicMetaData.ID}, Event Type: ${action} `;
-    console.log(eventMsg);
-    fs.appendFileSync(logFilePath, eventMsg + "\n");
-
+    log(`Woodwing Event - File: ${basicMetaData.Name}, Modified By: ${userName}, ID: ${basicMetaData.ID}, Event Type: ${action} `);
     switch (content.data.Object.MetaData.BasicMetaData.Type) {
         case "Article":
             const articleToIndexStatus = "IC - To Index";
@@ -357,8 +418,15 @@ app.post('/', async (req, res) => {
             const layoutToPackageStatus = "Layout To Package";
             if (content.data.Object.MetaData.WorkflowMetaData.State.Name == layoutToPackageStatus){
                 saveMessageFile(content);
-                let layoutObject = content.data.Object;
-                await packageLayout(layoutObject, layoutsRoot);
+                await packageLayout(content.data.Object, layoutsRoot);
+            }
+            const xmlToWebStatus = "XML for Web";
+            if (content.data.Object.MetaData.WorkflowMetaData.State.Name === xmlToWebStatus){
+                // Prevent infinite loop where the export triggers another export
+                if (content.data.Object.MetaData.WorkflowMetaData.Modifier !== "Webhook User"){
+                    saveMessageFile(content);
+                    await exportXML(content.data.Object, xmlExportsRoot);
+                }
             }
             break;
         case "Image":
@@ -380,8 +448,7 @@ app.post('/', async (req, res) => {
                 const outputFile = Path.join(imagesInDir, basicMetaData.Name + "." + ext);
                 // Now download the file
                 downloadItem(itemUrl, outputFile, (outputFile)=>{
-                    let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
-                    console.log(`${now} Downloaded: ${outputFile}`);
+                    log(`Downloaded: ${outputFile}`);
                 });
                 // Now update the item's metadata in Studio
                 const newStatus = "Image Exported";
@@ -415,7 +482,5 @@ app.post('/', async (req, res) => {
     res.sendStatus(200);
 })
 app.listen(port, () => {
-    let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
-    // let now = new Date().toISOString();
-    console.log(`${now} Awaiting events. Listening on port ${port}`)
+    log(`Awaiting events. Listening on port ${port}`);
 })
