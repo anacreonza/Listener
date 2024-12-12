@@ -16,6 +16,7 @@ function runXMLExport(
     username,
     password,
     docID,
+    xmlArticleDir,
     callback
 ) {
     const args = {
@@ -27,6 +28,7 @@ function runXMLExport(
                 { name: "username", value: username },
                 { name: "password", value: password },
                 { name: "docID", value: docID },
+                { name: "outputFolder", value: xmlArticleDir},
             ],
         },
     };

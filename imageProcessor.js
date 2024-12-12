@@ -37,9 +37,8 @@ class Queue {
             this.activeCount++;
             try {
                 makeLowResImage(image).then((outputFileName) => {
-                    log(`Output Image Created: ${outputFileName}`);
-                },
-                ).catch(console.error("Error processing image."));
+                    log(`Low res image created: ${outputFileName}`);
+                });
             } catch (error) {
                 log("Error processing task:", error);
             } finally {
@@ -56,17 +55,20 @@ function add(image) {
 
 function makeLowResImage(image) {
     return new Promise((resolve, reject) => {
+        let outputFileName = Path.parse(image.sourceFile).name + ".png";
+        let outputLayerFileName = Path.parse(image.sourceFile).name + "-0.png";
+        outputFileName = outputFileName.replace(/ /g, "_");
         let fileExt = Path.parse(image.sourceFile)
             .ext.replace(".", "")
             .toLowerCase();
         let outputFile = Path.join(
             image.outputDir,
-            Path.parse(image.sourceFile).name + ".png"
+            outputFileName.replace(/ /g, "_") // Replace spaces in image name with underscores
         );
         // Multi-layer PSDs extract to multiple files - with -0 etc appended to the filename. Promise will be rejected if output file name differs
         let outputLayerFile = Path.join(
             image.outputDir,
-            Path.parse(image.sourceFile).name + "-0.png"
+            outputLayerFileName.replace(/ /g, "_") // Replace spaces in image layer name with underscores
         );
         im.readMetadata(image.sourceFile, (err, metadata) => {
             if (err) throw err;
@@ -133,8 +135,12 @@ function makeLowResImage(image) {
                         if (stdout) {
                            log(stdout);
                         }
-                        if (fs.existsSync(outputFile) || fs.existsSync(outputLayerFile)) {
-                            log(`Successfully created low res of image: ${image.sourceFile}`);
+                        if (fs.existsSync(outputLayerFile)){
+                            log(`Successfully created low res layer file: ${outputLayerFile}`);
+                            resolve(outputLayerFile);
+                        }
+                        if (fs.existsSync(outputFile)) {
+                            log(`Successfully created low res of image: ${outputFile}`);
                             resolve(outputFile);
                         } else {
                             reject(`Low res file not created: ${outputFile}`);

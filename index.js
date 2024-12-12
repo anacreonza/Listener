@@ -191,37 +191,23 @@ function log(message){
     console.log(logMsg);
     fs.appendFileSync(logFilePath, `${logMsg}\n`);
 }
-async function exportXML(layoutInfo, xmlExportsRoot){
-    const metaData = layoutInfo.MetaData;
-    const basicMetaData = metaData.BasicMetaData;
-    const targetsData = layoutInfo.Targets;
-    idsHelpers.runXMLExport(iDserverUrl, process.env.INSTANCE, process.env.WWUSERNAME, process.env.WWPASSWORD, basicMetaData.ID, async (result)=>{
+async function exportXML(basicMetaData, xmlArticleDir){
+
+    idsHelpers.runXMLExport(iDserverUrl, process.env.INSTANCE, process.env.WWUSERNAME, process.env.WWPASSWORD, basicMetaData.ID, xmlArticleDir, async (result)=>{
         if (result.errorNumber === 0){
+            // Download the links
+            // We need to log in to Woodwing to get detailed metadata
             let sessionTicket = await wwHelpers.logOn();
             const objectInfo = await wwHelpers.getObjects(sessionTicket, [basicMetaData.ID]);
-            if (!fs.existsSync(xmlExportsRoot)){
-                fs.mkdirSync(xmlExportsRoot);
-            }
-            let xmlPublication = basicMetaData.Publication.Name;
-            const xmlExportDir = Path.join(xmlExportsRoot, xmlPublication);
-            if (!fs.existsSync(xmlExportDir)){
-                fs.mkdirSync(xmlExportDir);
-            }
-            let xmlIssueDir = Path.join(xmlExportDir, targetsData[0].Issue.Name);
-            if (!fs.existsSync(xmlIssueDir)){
-                fs.mkdirSync(xmlIssueDir);
-            }
-            let xmlArticleDir = Path.join(xmlIssueDir, basicMetaData.Name);
-            if (!fs.existsSync(xmlArticleDir)){
-                fs.mkdirSync(xmlArticleDir);
-            }
-            const linkIDs = await wwHelpers.getLinkIds(objectInfo[0].Relations, basicMetaData.ID);
+            // Get the linkIDs for all the links
+            const linkIDs = await wwHelpers.getLinkIds(objectInfo[0].Relations, articleId);
             if (linkIDs.length > 0){
+                // Prepare the destination folder
                 let webImagesDir = Path.join(xmlArticleDir, "images");
                 if (!fs.existsSync(webImagesDir)){
                     fs.mkdirSync(webImagesDir);
                 }
-                // Now download all the links
+                // Now start the actual downloads
                 linkIDs.forEach(async function(linkId){
                     let linkInfo = await wwHelpers.getObjects(sessionTicket, [linkId]);
                     // console.log(`Downloading link: ${linkInfo[0].MetaData.BasicMetaData.Name}`);
@@ -229,7 +215,7 @@ async function exportXML(layoutInfo, xmlExportsRoot){
                     let linkExt = wwHelpers.getExtensionFromMimeType(linkType);
                     let linkFile = Path.join(webImagesDir, linkInfo[0].MetaData.BasicMetaData.Name + "." + linkExt);
                     let linkUrl = `${linkInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
-                    downloadItem(linkUrl, linkFile, (linkFile)=>{
+                    downloadItem(linkUrl, linkFile, async (linkFile)=>{
                         log(`Saved linked item: ${linkFile}`);
                         let fileExt = Path.parse(linkFile).ext.replace(".", "").toUpperCase();
                         if (
@@ -246,16 +232,33 @@ async function exportXML(layoutInfo, xmlExportsRoot){
                                 "outputDir": webImagesDir 
                             }
                             // Make low res versions of links
-                            imageProcessor.add(image);
-                        };
-                    });
-                });
+                            // imageProcessor.add(image);
+                            imageProcessor.makeLowResImage(image).then(
+                                (outputFile)=>{
+                                    if (fs.existsSync(outputFile || outputLayerFile)){
+                                        // Remove the high res files - we don't need them now
+                                        fs.unlink(image.sourceFile, (err)=>{
+                                            if (err) {
+                                                log(`Error deleting file: ${image.sourceFile}. ${err}`);
+                                            } else {
+                                                log(`Deleted high-res file: ${image.sourceFile}`);
+                                            }
+                                        });
+                                    }
+                                });
+                            }
+                        })
+                    })
+                log(`File: ${basicMetaData.Name} successfully exported to XML.`);
+            } else {
+                log(`XML export of file: ${basicMetaData.Name} failed. Error number: ${result.errorNumber}, ScriptResult: ${result.scriptResult}`);
             }
-            log(`File: ${basicMetaData.Name} successfully exported to XML.`);
-        } else {
-            log(`XML export of file: ${basicMetaData.Name} failed. Error number: ${result.errorNumber}, ScriptResult: ${result.scriptResult}`);
         }
     });
+}
+async function removeUnusableLowResImages(xmlArticleDir){
+    const imagesDir = Path.join(xmlArticleDir, "images");
+    const files = fs.readdirSync(imagesDir);
 }
 async function packageLayout(layoutInfo, layoutsRoot){
     const metaData = layoutInfo.MetaData;
@@ -425,7 +428,28 @@ app.post('/', async (req, res) => {
                 // Prevent infinite loop where the export triggers another export
                 if (content.data.Object.MetaData.WorkflowMetaData.Modifier !== "Webhook User"){
                     saveMessageFile(content);
-                    await exportXML(content.data.Object, xmlExportsRoot);
+                    const layoutInfo = content.data.Object
+                    const metaData = layoutInfo.MetaData;
+                    const basicMetaData = metaData.BasicMetaData;
+                    const targetsData = layoutInfo.Targets;
+                    if (!fs.existsSync(xmlExportsRoot)){
+                        fs.mkdirSync(xmlExportsRoot);
+                    }
+                    let xmlPublication = basicMetaData.Publication.Name;
+                    const xmlExportDir = Path.join(xmlExportsRoot, xmlPublication);
+                    if (!fs.existsSync(xmlExportDir)){
+                        fs.mkdirSync(xmlExportDir);
+                    }
+                    let xmlIssueDir = Path.join(xmlExportDir, targetsData[0].Issue.Name);
+                    if (!fs.existsSync(xmlIssueDir)){
+                        fs.mkdirSync(xmlIssueDir);
+                    }
+                    let xmlArticleDir = Path.join(xmlIssueDir, basicMetaData.Name);
+                    if (!fs.existsSync(xmlArticleDir)){
+                        fs.mkdirSync(xmlArticleDir);
+                    }
+                    await exportXML(basicMetaData, xmlArticleDir);
+                    await removeUnusableLowResImages(xmlArticleDir);
                 }
             }
             break;

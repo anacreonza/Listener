@@ -133,6 +133,10 @@ function findHeadline(doc){
         if (headline.length > 65){
             headline = headline.substring(0,64);
         }
+        // Remove space at end - damn Extendscript does not have trim()
+        if (headline.slice(-1) == " "){
+            headline = headline.substring(0, headline.length - 1);
+        }
         return headline;
     }
     var headline = "";
@@ -141,17 +145,22 @@ function findHeadline(doc){
     for (var i=0, len=headingStyles.length; i < len ; i++) {
         headline = findHeadlineByStyle(doc, headingStyles[i], headline);
     };
-
-    // Then try to detect it by point size
-    if (headline === ""){
+    if (headline !== ""){
+        writeLogEntry(log, "Headline detected by style sheet: " + headline);
+        return headline;
+    } else {
+        // Finding headline by stylesheet failed - now try to detect it by point size
         headline = findHeadlineBySize(doc, 20);
+        if (headline !== ""){
+            writeLogEntry(log, "Headline detected by size: " + headline);
+            return headline;
+        } else {
+            // Deal with case where no headline detected at all
+            headline = "No headline detected";
+            writeLogEntry(log, "Unable to detect headline by style sheet or size. Defaulting to: " + headline);
+            return headline;
+        }
     }
-
-    // Deal with case where no headline detected at all
-    if (headline == ""){
-        headline = "No headline detected";
-    }
-    return headline;
 }
 function buildOutputFileName(metaData) {
     var outputFileNameString = metaData.headline;
@@ -208,7 +217,17 @@ function exportXml(doc) {
     var exportPrefs = doc.xmlExportPreferences;
     exportPrefs.characterReferences = true; // Remap special characters
     exportPrefs.exportUntaggedTablesFormat = XMLExportUntaggedTablesFormat.NONE; // Export untagged tables as XML: no
-    exportPrefs.copyFormattedImages = true; // Optimised formatted images
+
+    // Save the original high-res files - but the references in the XML is only to the file ID not name. :-(
+    exportPrefs.copyOriginalImages = false;
+
+    // Optimised images - high res but gets format conversion and _opt. at end of name, but again no file name ref gets saved in XML - only file id.
+    exportPrefs.copyOptimizedImages = false; 
+
+    // Formatted images - get massively dowsampled, format conversion as well as _fmt. at end of name - images basically useless,
+    // but the XML gets the image name in the href_fmt attribute - which we need
+    exportPrefs.copyFormattedImages = true; 
+
     exportPrefs.imageConversion = ImageConversion.JPEG; // JPEG format
     exportPrefs.jpegOptionsFormat = JPEGOptionsFormat.BASELINE_ENCODING; // Format Method: Baseline
     exportPrefs.jpegOptionsQuality = JPEGOptionsQuality.MAXIMUM; // Maximum quality
@@ -221,7 +240,6 @@ function exportXml(doc) {
     var xmlDocName = buildOutputFileName(metaData);
     var exportFileName = outputFolder + "/" + xmlDocName;
     var exportFile = File(exportFileName);
-    writeLogEntry(log, "Creating XML file: " + exportFileName);
     var xmlExport = doc.exportFile(ExportFormat.XML, exportFile);
     if (exportFile.exists) {
         writeLogEntry(log, "Saved exported XML to " + exportFileName);
