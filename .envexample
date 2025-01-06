@@ -1,6 +1,6 @@
 PORT = 8088
-APIUSERNAME = webhook_user
-APIPASSWORD = webhook_password
+WWUSERNAME = webhook_user
+WWPASSWORD = webhook_password
 SERVERURL = "https://wwstudioeserver.com"
 INSTANCE = "Studio"
 ESSERVER = "https://elasticsearch.server.example.com:9200"
@@ -9,3 +9,6 @@ ESPASS = "espass"
 INDEX = "article-archive"
 AUTHKEY = "1234abcd"
 EXPORTSDIR = "C:/Exports"
+TIMEZONE = "Africa/Johannesburg"
+LOGFILE = "";
+IDSERVERURL = "http://indesignserver.com:18386"

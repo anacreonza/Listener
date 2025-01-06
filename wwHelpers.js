@@ -12,12 +12,15 @@ module.exports = {
     logOn: async function () {
         const ticketFile = path.join(__dirname, "ticket.json");
         const ticketData = fs.readFileSync(ticketFile);
-        const ticketJSON = JSON.parse(ticketData);
-        const existingTicket = ticketJSON.Ticket;
-        const validTicket = await this.checkTicket(existingTicket);
-        if (validTicket){
-            console.log(`Ticket: ${validTicket} still valid.`);
-            return validTicket;
+        // Check for case of empty ticket file
+        if (ticketData.length !== 0){
+            const ticketJSON = JSON.parse(ticketData);
+            const existingTicket = ticketJSON.Ticket;
+            const validTicket = await this.checkTicket(existingTicket);
+            if (validTicket){
+                console.log(`Ticket: ${validTicket} still valid.`);
+                return validTicket;
+            }
         }
         const logOnRequestBody = {
             "method": "LogOn",

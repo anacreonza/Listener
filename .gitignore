@@ -1,5 +1,6 @@
 node_modules/
 Messages/
+Old Logs/
 .env
 ticket.json
 Examples

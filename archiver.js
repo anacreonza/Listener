@@ -1,48 +1,10 @@
 const Path = require("node:path");
 const fs = require("node:fs");
 const datefns = require("date-fns");
+const wwHelpers = require('./wwHelpers');
 const logFilePath = Path.join(__dirname, "activityLog.log");
 
-// Queue processor
-class Queue {
-    constructor(concurrency) {
-        this.concurrency = concurrency;
-        this.images = [];
-        this.activeCount = 0;
-    }
-
-    enqueue(image) {
-        this.images.push(image);
-        this.processQueue();
-    }
-
-    async processQueue() {
-        while (this.activeCount < this.concurrency && this.images.length > 0) {
-            const image = this.images.shift();
-            this.activeCount++;
-            try {
-                archiveDossier(dossierInfo, archivesRoot).then((result) => {
-                    fs.appendFileSync(logFilePath, result);
-                    console.log(entry);
-                }
-                );
-            } catch (error) {
-                console.error("Error processing task:", error);
-            } finally {
-                this.activeCount--;
-                this.processQueue(); // Process the next task
-            }
-        }
-    }
-}
-export default function add(dossier) {
-    const queue = new Queue(5);
-    queue.enqueue(dossier);
-}
-export default async function archiveDossier(dossierInfo, archivesRoot){
-    let sessionTicket = await wwHelpers.logOn();
-    const basicMetaData = dossierInfo.metaData.BasicMetaData;
-    const extendedDossierInfo = await wwHelpers.getObjects(sessionTicket, [basicMetaData.ID]);
+async function archiveDossier(dossierInfo, archivesRoot){
     let dossierItemIds = await wwHelpers.getDossierChildIds(extendedDossierInfo[0].Relations, basicMetaData.ID);
 
     return new Promise((resolve, reject) => {
@@ -123,3 +85,4 @@ export default async function archiveDossier(dossierInfo, archivesRoot){
  
     })
 }
+module.exports = { archiveDossier }

@@ -18,6 +18,7 @@ const { text } = require("body-parser");
 const iDserverUrl = process.env.IDSERVERURL;
 const idsHelpers = require("./idsHelpers");
 const soap = require("soap");
+const archiver = require("./archiver");
 const client = new Client({
     node: process.env.ESSERVER,
     auth: {
@@ -58,13 +59,10 @@ async function saveMessageFile(content){
 }
 
 async function downloadItem(itemUrl, outputFile, callback){
-    // Prevent too many downloads from overloading server.
     let dateStamp = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
     let entry = `${dateStamp} Downloading item: ${itemUrl}\n`;
     console.log(entry);
     fs.appendFileSync(logFilePath, entry);
-    const sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay));
-    await sleep(10000);
     const stream = fs.createWriteStream(outputFile);
     const { body, status } = await fetch(itemUrl);
     if (status !== 200){
@@ -73,6 +71,24 @@ async function downloadItem(itemUrl, outputFile, callback){
     // await fetch(itemUrl);
     await finished(Readable.fromWeb(body).pipe(stream));
     callback(outputFile);
+}
+async function fetchItem(itemurl, outputFile){
+    return new Promise (async (resolve, reject) => {
+        log(`Downloading file from: ${itemurl}`);
+        const res = await fetch(itemurl);
+        const outputFileElements = Path.parse(outputFile);
+        const destinationDir = outputFileElements.dir;
+        if (!fs.existsSync(destinationDir)){
+            reject(`Invalid download destination: ${destinationDir}`);
+        }
+        const fileStream = fs.createWriteStream(outputFile, { flags: 'wx' });
+        await finished(Readable.fromWeb(res.body).pipe(fileStream));
+        if (fs.existsSync(outputFile)){
+            resolve(`File download complete: ${outputFile}`);
+        } else {
+            reject(`File download failed: ${outputFile}`);
+        }
+    });
 }
 
 async function downloadArticle(metaData){
@@ -316,7 +332,7 @@ async function packageLayout(layoutInfo, layoutsRoot){
         const ext = wwHelpers.getExtensionFromMimeType(mimeType);
         const outputFile = Path.join(layoutDir, basicMetaData.Name + "." + ext);
         // Now download the file itself
-        downloadItem(itemUrl, outputFile, (outputFile)=>{
+        await downloadItem(itemUrl, outputFile, (outputFile)=>{
             log(`Saved layout: ${outputFile}`);
         });
 
@@ -326,10 +342,6 @@ async function packageLayout(layoutInfo, layoutsRoot){
             if (!fs.existsSync(linksDir)){
                 fs.mkdirSync(linksDir);
             }
-            let webLinksDir = Path.join(layoutDir, "WebLinks");
-            if (!fs.existsSync(webLinksDir)){
-                fs.mkdirSync(webLinksDir);
-            }
             // Now download all the links
             links.forEach(async function(linkId){
                 let linkInfo = await wwHelpers.getObjects(sessionTicket, [linkId]);
@@ -338,7 +350,10 @@ async function packageLayout(layoutInfo, layoutsRoot){
                 let linkExt = wwHelpers.getExtensionFromMimeType(linkType);
                 let linkFile = Path.join(linksDir, linkInfo[0].MetaData.BasicMetaData.Name + "." + linkExt);
                 let linkUrl = `${linkInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
-                downloadItem(linkUrl, linkFile, (linkFile)=>{
+                // Prevent too many downloads from overloading server.
+                const sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay));
+                await sleep(20000);
+                await downloadItem(linkUrl, linkFile, (linkFile)=>{
                     log(`Saved linked item: ${linkFile}`);
                     let fileExt = Path.parse(linkFile).ext.replace(".", "").toUpperCase();
 
@@ -352,6 +367,10 @@ async function packageLayout(layoutInfo, layoutsRoot){
                             fileExt.includes("PDF")
                             // fileExt.includes("EPS")
                         ) {
+                            let webLinksDir = Path.join(layoutDir, "WebLinks");
+                            if (!fs.existsSync(webLinksDir)){
+                                fs.mkdirSync(webLinksDir);
+                            }
                             log(`Generating Web Image for item: ${linkInfo[0].MetaData.BasicMetaData.Name}.${fileExt}\n`);
                             let image = {
                                 "sourceFile": linkFile,
@@ -420,7 +439,13 @@ app.post('/', async (req, res) => {
         case "Layout":
             const layoutToPackageStatus = "Layout To Package";
             if (content.data.Object.MetaData.WorkflowMetaData.State.Name == layoutToPackageStatus){
-                saveMessageFile(content);
+                let contentJSON = JSON.stringify(content);
+                try {(JSON.parse(contentJSON))
+                    saveMessageFile(content);
+                } catch(err) {
+                    console.log(err);
+                    break;
+                }
                 await packageLayout(content.data.Object, layoutsRoot);
             }
             const xmlToWebStatus = "XML for Web";
@@ -489,12 +514,17 @@ app.post('/', async (req, res) => {
             }
             break;
         case "Dossier":
-            const dossierToArchiveStatus = "None"; // Disabling Dossier archiving due to server overload
-            // const dossierToArchiveStatus = "Dossier To Archive";
+            // const dossierToArchiveStatus = "None"; // Disabling Dossier archiving due to server overload
+            const dossierToArchiveStatus = "Dossier to Archive";
+            const dossierObjectId = basicMetaData.ID;
+            var objectIds = [];
+            objectIds.push(dossierObjectId);
             if (content.data.Object.MetaData.WorkflowMetaData.State.Name == dossierToArchiveStatus){
                 saveMessageFile(content);
-                let dossierObject = content.data.Object;
-                archiver.archiveDossier(dossierObject, archivesRoot).then((result) => {
+                console.log("Processing Dossier:");
+                let sessionTicket = await wwHelpers.logOn();
+                const objectInfo = await wwHelpers.getObjects(sessionTicket, objectIds);
+                archiver.archiveDossier(objectInfo, archivesRoot).then((result) => {
                     wwHelpers.changeObjectStatus(sessionTicket, basicMetaData.ID, "Dossier Archived", result);
                 });
             }
