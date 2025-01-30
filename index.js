@@ -39,6 +39,7 @@ articlesRoot = Path.join(exportsRoot, "Articles");
 layoutsRoot = Path.join(exportsRoot, "Layouts");
 archivesRoot = Path.join(exportsRoot, "Archives");
 landbouLayoutsRoot = "\\\\02cpt-wkl01.m24.media24.com\\LBW\\LBWredaksioneel\\Uitgawes Packaged files\\";
+landbouXMLRoot = "\\\\02cpt-wkl01.m24.media24.com\\LBW\\LBWredaksioneel\\Uitgawes Packaged files\\XML\\";
 xmlExportsRoot = "\\\\02cpt-wkl01.m24.media24.com\\PDF Store\\XML\\";
 const logFilePath = Path.join(__dirname, "activityLog.log");
 
@@ -94,9 +95,7 @@ async function fetchItem(itemurl, outputFile){
 async function downloadArticle(metaData){
     const basicMetaData = metaData.BasicMetaData;
     const contentMetaData = metaData.ContentMetaData;
-    let entry = `Processing Article: ${basicMetaData.Name}`;
-    console.log(entry);
-    fs.appendFileSync(logFilePath, entry + "\n");
+    log(`Processing Article: ${basicMetaData.Name}`);
     // Get the full data for the object (the event message does not contain everything we need)
     const objectId = basicMetaData.ID;
     var objectIds = [];
@@ -162,7 +161,7 @@ async function indexArticle(client, index, content, articleFile){
         body: content
     });
     if (indexRequest.result == "created"){
-        log(`Indexed: ${articleFile}`);
+        log(`Article ${articleFile} indexed`);
         return true;
     } else {
         log(msg.result);
@@ -192,7 +191,6 @@ async function archiveArticle(content, articlesRoot){
     }
     if (indexed == true){
         // Change status of article
-        log(`Article ${basicMetaData.Name} indexed`);
         let sessionTicket = await wwHelpers.logOn();
         let now = datefns.format(new Date(), "yyyy-MM-dd HH:mm");
         await wwHelpers.changeObjectStatus(sessionTicket, basicMetaData.ID, "IC - Indexed", `${now} Article Indexed`);
@@ -208,73 +206,171 @@ function log(message){
     fs.appendFileSync(logFilePath, `${logMsg}\n`);
 }
 async function exportXML(basicMetaData, xmlArticleDir){
-
-    idsHelpers.runXMLExport(iDserverUrl, process.env.INSTANCE, process.env.WWUSERNAME, process.env.WWPASSWORD, basicMetaData.ID, xmlArticleDir, async (result)=>{
-        if (result.errorNumber === 0){
-            // Download the links
-            // We need to log in to Woodwing to get detailed metadata
-            let sessionTicket = await wwHelpers.logOn();
-            const objectInfo = await wwHelpers.getObjects(sessionTicket, [basicMetaData.ID]);
-            // Get the linkIDs for all the links
-            const linkIDs = await wwHelpers.getLinkIds(objectInfo[0].Relations, articleId);
-            if (linkIDs.length > 0){
-                // Prepare the destination folder
-                let webImagesDir = Path.join(xmlArticleDir, "images");
-                if (!fs.existsSync(webImagesDir)){
-                    fs.mkdirSync(webImagesDir);
-                }
-                // Now start the actual downloads
-                linkIDs.forEach(async function(linkId){
-                    let linkInfo = await wwHelpers.getObjects(sessionTicket, [linkId]);
-                    // console.log(`Downloading link: ${linkInfo[0].MetaData.BasicMetaData.Name}`);
-                    let linkType = linkInfo[0].Files[0].Type;
-                    let linkExt = wwHelpers.getExtensionFromMimeType(linkType);
-                    let linkFile = Path.join(webImagesDir, linkInfo[0].MetaData.BasicMetaData.Name + "." + linkExt);
-                    let linkUrl = `${linkInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
-                    downloadItem(linkUrl, linkFile, async (linkFile)=>{
-                        log(`Saved linked item: ${linkFile}`);
-                        let fileExt = Path.parse(linkFile).ext.replace(".", "").toUpperCase();
-                        if (
-                            fileExt.includes("JPG") ||
-                            fileExt.includes("PSD") ||
-                            fileExt.includes("TIF") ||
-                            fileExt.includes("PNG") ||
-                            fileExt.includes("PDF")
-                            // fileExt.includes("EPS")
-                        ) {
-                            log(`Generating Web Image for item: ${linkInfo[0].MetaData.BasicMetaData.Name}.${fileExt}`);
-                            let image = {
-                                "sourceFile": linkFile,
-                                "outputDir": webImagesDir 
-                            }
-                            // Make low res versions of links
-                            // imageProcessor.add(image);
-                            imageProcessor.makeLowResImage(image).then(
-                                (outputFile)=>{
-                                    if (fs.existsSync(outputFile || outputLayerFile)){
-                                        // Remove the high res files - we don't need them now
-                                        fs.unlink(image.sourceFile, (err)=>{
-                                            if (err) {
-                                                log(`Error deleting file: ${image.sourceFile}. ${err}`);
-                                            } else {
-                                                log(`Deleted high-res file: ${image.sourceFile}`);
-                                            }
-                                        });
+    let sessionTicket = await wwHelpers.logOn();
+    // Special case for landbou exports
+    if (basicMetaData.Publication.Name == "LANDBOU"){
+        xmlArticleDir = Path.join(landbouXMLRoot, basicMetaData.Name);
+        if (!fs.existsSync(xmlArticleDir)){
+            fs.mkdirSync(xmlArticleDir)
+        }
+    }
+    // Download the layout file
+    const layoutInfo = await wwHelpers.getObjects(sessionTicket, [basicMetaData.ID]);
+    const layoutUrl = `${layoutInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
+    const mimeType = layoutInfo[0].Files[0].Type;
+    const ext = wwHelpers.getExtensionFromMimeType(mimeType);
+    const outputFile = Path.join(xmlArticleDir, basicMetaData.Name + "." + ext);
+    await downloadItem(layoutUrl, outputFile, (outputFile)=>{
+        log(`Saved layout: ${outputFile}`);
+    });
+    // Download the links
+    // Get the linkIDs for all the links
+    const linkIDs = await wwHelpers.getLinkIds(layoutInfo[0].Relations, [basicMetaData.ID]);
+    if (linkIDs.length > 0){
+        // Prepare the destination folder
+        let webImagesDir = Path.join(xmlArticleDir, "images");
+        if (!fs.existsSync(webImagesDir)){
+            fs.mkdirSync(webImagesDir);
+        }
+        // Now start the actual downloads
+        linkIDs.forEach(async function(linkId){
+            let linkInfo = await wwHelpers.getObjects(sessionTicket, [linkId]);
+            // console.log(`Downloading link: ${linkInfo[0].MetaData.BasicMetaData.Name}`);
+            let linkType = linkInfo[0].Files[0].Type;
+            let linkExt = wwHelpers.getExtensionFromMimeType(linkType);
+            let linkFile = Path.join(webImagesDir, linkInfo[0].MetaData.BasicMetaData.Name + "." + linkExt);
+            let linkUrl = `${linkInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
+            downloadItem(linkUrl, linkFile, async (linkFile)=>{
+                log(`Saved linked item: ${linkFile}`);
+                let fileExt = Path.parse(linkFile).ext.replace(".", "").toUpperCase();
+                if (
+                    fileExt.includes("JPG") ||
+                    fileExt.includes("PSD") ||
+                    fileExt.includes("TIF") ||
+                    fileExt.includes("PNG") ||
+                    fileExt.includes("PDF")
+                    // fileExt.includes("EPS")
+                ) {
+                    log(`Generating Web Image for item: ${linkInfo[0].MetaData.BasicMetaData.Name}.${fileExt}`);
+                    let image = {
+                        "sourceFile": linkFile,
+                        "outputDir": webImagesDir 
+                    }
+                    // Make low res versions of links
+                    // imageProcessor.add(image);
+                    imageProcessor.makeLowResImage(image).then(
+                        (outputFile)=>{
+                            if (fs.existsSync(outputFile || outputLayerFile)){
+                                // Remove the high res files - we don't need them now
+                                fs.unlink(image.sourceFile, (err)=>{
+                                    if (err) {
+                                        log(`Error deleting file: ${image.sourceFile}. ${err}`);
+                                    } else {
+                                        log(`Deleted high-res file: ${image.sourceFile}`);
                                     }
                                 });
+                                // Also remove the formatted mini jpg files that the export process produces
+                                let formattedFileName = Path.basename(image.sourceFile).replace(".jpg", "_fmt.jpg");
+                                let formattedFile = Path.join(Path.dirname(image.sourceFile), formattedFileName);
+                                if (fs.existsSync(formattedFile)){
+                                    fs.unlink(formattedFile, (err)=>{
+                                        if (err) {
+                                            log(`Error deleting formatted image file: ${formattedFile}`);
+                                        } else {
+                                            log(`Deleted formatted image file: ${formattedFile}`);
+                                        }
+                                    })
+                                }
                             }
-                        })
-                    })
-                log(`File: ${basicMetaData.Name} successfully exported to XML.`);
-            } else {
-                log(`XML export of file: ${basicMetaData.Name} failed. Error number: ${result.errorNumber}, ScriptResult: ${result.scriptResult}`);
-            }
+                        });
+                    }
+                })
+            })
+    }
+    idsHelpers.runXMLExport(iDserverUrl, process.env.INSTANCE, process.env.WWUSERNAME, process.env.WWPASSWORD, basicMetaData.ID, xmlArticleDir, async (result)=>{
+        if (result.errorNumber === 0){
+            // No real way of knowing what the final XML file's name is - as that is generated by the IDS script - which cannot talk back to the calling script.
+            let filesInOutputDir = fs.readdirSync(xmlArticleDir);
+            let xmlFiles = filesInOutputDir.filter((file)=>{
+                return file.includes(".xml");
+            });
+            xmlFiles.map((file)=>{
+                modifyImageLinksInXML(file);
+            })
+            log(`File: ${basicMetaData.Name} successfully exported to XML.`);
+        } else {
+            log(`XML export of file: ${basicMetaData.Name} failed. Error number: ${sdsdsdresult.errorNumber}, ScriptResult: ${result.scriptResult}`);
         }
     });
 }
+function modifyImageLinksInXML(xmlFile){
+    function convertLink(linkString) {
+        let newLink = linkString
+            .replace(Path.extname(linkString), ".png")
+            .replace("_fmt", "")
+            .replace("_opt", "");
+        return newLink;
+    }
+    function findAValidImageLink(imageLinkString) {
+        if (imageLinkString == null) {
+            return false;
+        }
+        if (
+            imageLinkString.match(/file:\/\/\/[0-9][0-9][0-9][0-9][0-9][0-9]/)
+        ) {
+            return false;
+        }
+        return imageLinkString;
+    }
+    const xmlFileContent = fs.readFileSync(xmlFile, {
+        encoding: "utf8",
+        flag: "r",
+    });
+    var doc = new DOMParser().parseFromString(xmlFileContent, "text/xml");
+    const imageNodes = xpath.select("//Image", doc);
+    let imageNodeIndex = 0;
+    let valid_link = false;
+    let newHref = "";
+    imageNodes.forEach((imageNode) => {
+        // Check href_fmt for valid link
+        let href_fmt = imageNode.getAttribute("href_fmt");
+        valid_href_fmt = findAValidImageLink(href_fmt);
+        if (valid_href_fmt) {
+            valid_link = valid_href_fmt;
+        }
+        imageNode.removeAttribute("href_fmt");
+        // Deal with href
+        let href = imageNode.getAttribute("href");
+        valid_href = findAValidImageLink(href);
+        if (valid_href) {
+            valid_link = valid_href;
+        }
+        if (valid_link) {
+            newHref = convertLink(valid_link);
+            imageNode.setAttribute("href", newHref);
+        } else {
+            console.log(`No valid link info found in either href or href_fmt`);
+            return false;
+        }
+        imageNodeIndex++;
+    });
+    // Serialize the updated XML document
+    const updatedXml = new XMLSerializer().serializeToString(doc);
+
+    // Make a backup copy of the original XML file
+    // const xmlFileBackup = xmlFile.replace(Path.extname(xmlFile), "_backup.xml");
+    // fs.writeFileSync(xmlFileBackup, xmlFileContent, "utf-8");
+    // Write the updated XML back to file or handle as needed
+    fs.writeFileSync(xmlFile, updatedXml, "utf-8");
+    console.log(
+        `Updated ${imageNodeIndex} image links in XML File: ${xmlFile}`
+    );
+}
 async function removeUnusableLowResImages(xmlArticleDir){
     const imagesDir = Path.join(xmlArticleDir, "images");
-    const files = fs.readdirSync(imagesDir);
+    if (fs.existsSync(imagesDir)){
+        const files = fs.readdirSync(imagesDir);
+    }
 }
 async function packageLayout(layoutInfo, layoutsRoot){
     const metaData = layoutInfo.MetaData;
@@ -345,41 +441,50 @@ async function packageLayout(layoutInfo, layoutsRoot){
             // Now download all the links
             links.forEach(async function(linkId){
                 let linkInfo = await wwHelpers.getObjects(sessionTicket, [linkId]);
+                if (typeof linkInfo[0].MetaData.BasicMetaData.Name == undefined){
+                    log(`Invalid file name: ${linkInfo}`);
+                    return;
+                }
                 // console.log(`Downloading link: ${linkInfo[0].MetaData.BasicMetaData.Name}`);
-                let linkType = linkInfo[0].Files[0].Type;
-                let linkExt = wwHelpers.getExtensionFromMimeType(linkType);
-                let linkFile = Path.join(linksDir, linkInfo[0].MetaData.BasicMetaData.Name + "." + linkExt);
-                let linkUrl = `${linkInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
-                // Prevent too many downloads from overloading server.
-                const sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay));
-                await sleep(20000);
-                await downloadItem(linkUrl, linkFile, (linkFile)=>{
-                    log(`Saved linked item: ${linkFile}`);
-                    let fileExt = Path.parse(linkFile).ext.replace(".", "").toUpperCase();
-
-                    // Only make low res files for landbou
-                    if (layoutPub == "LANDBOU"){
-                        if (
-                            fileExt.includes("JPG") ||
-                            fileExt.includes("PSD") ||
-                            fileExt.includes("TIF") ||
-                            fileExt.includes("PNG") ||
-                            fileExt.includes("PDF")
-                            // fileExt.includes("EPS")
-                        ) {
-                            let webLinksDir = Path.join(layoutDir, "WebLinks");
-                            if (!fs.existsSync(webLinksDir)){
-                                fs.mkdirSync(webLinksDir);
-                            }
-                            log(`Generating Web Image for item: ${linkInfo[0].MetaData.BasicMetaData.Name}.${fileExt}\n`);
-                            let image = {
-                                "sourceFile": linkFile,
-                                "outputDir": webLinksDir 
-                            }
-                            imageProcessor.add(image);
-                        };
-                    }
-                });
+                try {
+                    let linkType = linkInfo[0].Files[0].Type;
+                    let linkExt = wwHelpers.getExtensionFromMimeType(linkType);
+                    let linkFile = Path.join(linksDir, linkInfo[0].MetaData.BasicMetaData.Name + "." + linkExt);
+                    let linkUrl = `${linkInfo[0].Files[0].FileUrl}&ticket=${sessionTicket}`;
+                    // Prevent too many downloads from overloading server.
+                    const sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay));
+                    await sleep(20000);
+                    await downloadItem(linkUrl, linkFile, (linkFile)=>{
+                        log(`Saved linked item: ${linkFile}`);
+                        // let fileExt = Path.parse(linkFile).ext.replace(".", "").toUpperCase();
+    
+                        // // Only make low res files for landbou
+                        // if (layoutPub == "LANDBOU"){
+                        //     if (
+                        //         fileExt.includes("JPG") ||
+                        //         fileExt.includes("PSD") ||
+                        //         fileExt.includes("TIF") ||
+                        //         fileExt.includes("PNG") ||
+                        //         fileExt.includes("PDF")
+                        //         // fileExt.includes("EPS")
+                        //     ) {
+                        //         let webLinksDir = Path.join(layoutDir, "WebLinks");
+                        //         if (!fs.existsSync(webLinksDir)){
+                        //             fs.mkdirSync(webLinksDir);
+                        //         }
+                        //         log(`Generating Web Image for item: ${linkInfo[0].MetaData.BasicMetaData.Name}.${fileExt}`);
+                        //         let image = {
+                        //             "sourceFile": linkFile,
+                        //             "outputDir": webLinksDir 
+                        //         }
+                        //         imageProcessor.add(image);
+                        //     };
+                        // }
+                    });
+                } catch (error) {
+                    log(`${error} ${linkInfo}`);
+                    return
+                }
             });
 ;
         }
@@ -400,6 +505,17 @@ if (!fs.existsSync(messagesRoot)){
 }
 app.get('/', (req, res) => {
     res.sendStatus(404);
+})
+app.get('/log/', (req, res) => {
+    const logData = fs.readFileSync(logFilePath);
+    let logHtml = logData.toString();
+    logHtml = logHtml.replace(/\n/g, "<br>");
+    const response = fs.readFileSync("./public/Log.html");
+    let responseHtml = response.toString();
+    responseHtml = responseHtml.replace("<LogData/>", logHtml);
+    res.set('Content-Type','text/html');
+    res.send(responseHtml);
+    
 })
 app.post('/', async (req, res) => {
     const content = req.body;
@@ -536,5 +652,5 @@ app.post('/', async (req, res) => {
     res.sendStatus(200);
 })
 app.listen(port, () => {
-    log(`Awaiting events. Listening on port ${port}`);
+    log(`Listener application started. Awaiting events. Listening on port ${port}`);
 })

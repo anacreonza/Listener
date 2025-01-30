@@ -136,11 +136,9 @@ function makeLowResImage(image) {
                            log(stdout);
                         }
                         if (fs.existsSync(outputLayerFile)){
-                            log(`Successfully created low res layer file: ${outputLayerFile}`);
                             resolve(outputLayerFile);
                         }
                         if (fs.existsSync(outputFile)) {
-                            log(`Successfully created low res of image: ${outputFile}`);
                             resolve(outputFile);
                         } else {
                             reject(`Low res file not created: ${outputFile}`);
