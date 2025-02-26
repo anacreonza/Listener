@@ -18,7 +18,9 @@
     "express": "^4.18.3",
     "imagemagick": "^0.1.3",
     "node-fetch": "^3.3.2",
+    "saxon-js": "^2.7.0",
     "soap": "^1.1.6",
+    "xmldom": "^0.6.0",
     "xpath": "^0.0.34"
   }
 }

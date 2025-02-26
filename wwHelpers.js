@@ -888,7 +888,7 @@ module.exports = {
             return false;
         }
     },
-    getObjects: async function (sessionTicket, objectIDs){
+    getObjects: async function (sessionTicket, objectIDs, keepLocked = false){
         sessionTicket = await this.checkTicket(sessionTicket);
         if ( ! objectIDs ){
             console.log("No valid object IDs received!");
@@ -900,7 +900,7 @@ module.exports = {
             "params": [{
                 "Ticket": sessionTicket,
                 "IDs": objectIDs,
-                "Lock": false,
+                "Lock": keepLocked,
                 "Rendition": "native",
                 "RequestInfo": ["Relations", "PagesInfo"],
                 "HaveVersions": [],

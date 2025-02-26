@@ -123,7 +123,7 @@ function makeLowResImage(image) {
                         "-density",
                         "72",
                         "-quality",
-                        "80",
+                        "60",
                         "-profile",
                         "./CoatedFOGRA39.icc",
                         "-profile",
